@@ -1,0 +1,7 @@
+node_modules
+main
+.idea
+package-lock.json
+*.zip
+*.iml
+partial-results.json
