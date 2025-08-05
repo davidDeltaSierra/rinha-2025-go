@@ -3,24 +3,42 @@ package main
 import (
 	"fmt"
 	"github.com/valyala/fasthttp"
+	"net"
 	"os"
 	"rinha/rest"
+	"runtime/debug"
 	"time"
 )
 
 func main() {
-	isMaster := os.Getenv("GATEWAY")
-	if isMaster == "true" {
+	debug.SetGCPercent(3000)
+	isGateway := os.Getenv("GATEWAY")
+	if isGateway == "true" {
 		fmt.Println("init gateway")
 		time.Sleep(2 * time.Second)
-		rest.SetupMaster()
-		if err := fasthttp.ListenAndServe(":8080", router); err != nil {
+		rest.InitializeClients()
+		if err := fasthttp.ListenAndServe(":8080", rest.GatewayHandler); err != nil {
 			panic(err)
 		}
 		return
 	}
-	fmt.Println("init worker")
-	rest.SetupWorker()
+	fmt.Println("init api")
+	sock := os.Getenv("SOCK")
+	os.Remove(sock)
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		fmt.Println("Erro ao iniciar socket:", err)
+		panic(err)
+	}
+	err = os.Chmod(sock, 0666)
+	if err != nil {
+		fmt.Println("Error ao liberar permissões:", err)
+		panic(err)
+	}
+	rest.SetupAPI()
+	if err := fasthttp.Serve(l, router); err != nil {
+		panic(err)
+	}
 }
 
 func router(ctx *fasthttp.RequestCtx) {

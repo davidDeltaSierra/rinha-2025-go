@@ -1,4 +1,4 @@
-FROM golang:1.23.0
+FROM golang:1.24.5-alpine
 WORKDIR /app
 COPY ./main .
 CMD ["./main"]

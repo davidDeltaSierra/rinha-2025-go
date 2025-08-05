@@ -2,16 +2,18 @@ package rest
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"github.com/goccy/go-json"
 	"github.com/jackc/pgx/v5"
 	"github.com/valyala/fasthttp"
-	"log"
-	"net"
 	"rinha/database"
+	"strconv"
 	"sync"
 	"time"
 )
+
+const pDefault = "http://payment-processor-default:8080"
+const pFallback = "http://payment-processor-fallback:8080"
 
 type paymentDTO struct {
 	CorrelationID string    `json:"correlationId"`
@@ -29,23 +31,48 @@ type PaymentSummary struct {
 	Fallback Summary `json:"fallback"`
 }
 
+var paymentProcessorClient = fasthttp.Client{
+	ReadTimeout:         6 * time.Second,
+	MaxIdleConnDuration: 60 * time.Second,
+	MaxConnsPerHost:     2,
+}
+var paymentDTOChannel = make(chan *paymentDTO, 16000)
+var paymentBodyChannel = make(chan []byte, 16000)
+
 var paymentDTOPool = sync.Pool{
 	New: func() any {
 		return new(paymentDTO)
 	},
 }
-
-var unixBytePool = sync.Pool{
+var paymentBytePool = sync.Pool{
 	New: func() any {
 		b := make([]byte, 256)
 		return &b
 	},
 }
-var dispatcher = make(chan []byte, 32000)
-var unixConn net.Conn
+
+func SetupAPI() {
+	for i := 0; i < 1; i++ {
+		go func() {
+			for payment := range paymentDTOChannel {
+				paymentHandler(payment)
+			}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		go func() {
+			for bytes := range paymentBodyChannel {
+				payment := paymentDTOPool.Get().(*paymentDTO)
+				json.Unmarshal(bytes, payment)
+				payment.RequestedAt = time.Now().UTC()
+				paymentDTOChannel <- payment
+			}
+		}()
+	}
+}
 
 func PaymentsController(ctx *fasthttp.RequestCtx) {
-	dispatcher <- ctx.PostBody()
+	paymentBodyChannel <- ctx.Request.Body()
 	ctx.SetStatusCode(fasthttp.StatusAccepted)
 }
 
@@ -67,28 +94,6 @@ func PaymentSummaryController(ctx *fasthttp.RequestCtx) {
 
 func HealthcheckController(ctx *fasthttp.RequestCtx) {
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
-}
-
-func SetupMaster() {
-	var err error
-	unixConn, err = net.Dial("unix", socketPath)
-	if err != nil {
-		fmt.Println("Erro ao conectar ao socket:", err)
-		panic(err)
-	}
-	go func() {
-		for body := range dispatcher {
-			bufPtr := unixBytePool.Get().(*[]byte)
-			buf := append((*bufPtr)[:0], body...)
-			buf = append(buf, '\n')
-			_, err := unixConn.Write(buf)
-			if err != nil {
-				log.Println("Erro ao enviar dados para o worker:", err)
-			}
-			*bufPtr = buf[:0]
-			unixBytePool.Put(bufPtr)
-		}
-	}()
 }
 
 func getPaymentsSummary(from *string, to *string) (*PaymentSummary, error) {
@@ -114,7 +119,7 @@ func getPaymentsSummary(from *string, to *string) (*PaymentSummary, error) {
 	if err != nil {
 		return nil, err
 	}
-	summary := &PaymentSummary{}
+	summary := PaymentSummary{}
 	for rows.Next() {
 		var handler string
 		var totalRequests int
@@ -130,5 +135,64 @@ func getPaymentsSummary(from *string, to *string) (*PaymentSummary, error) {
 		}
 	}
 	rows.Close()
-	return summary, nil
+	return &summary, nil
+}
+
+func tryPay(body *paymentDTO, processor string) (err error) {
+	bufPtr := paymentBytePool.Get().(*[]byte)
+	data, err := json.Marshal(body)
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	if err != nil {
+		goto cleanup
+	}
+	*bufPtr = append(*bufPtr, data...)
+	req.SetRequestURI(processor + "/payments")
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.SetBody(*bufPtr)
+
+	err = paymentProcessorClient.Do(req, resp)
+	if err != nil {
+		goto cleanup
+	}
+	if resp.StatusCode() != fasthttp.StatusOK {
+		err = errors.New("Status code: " + strconv.Itoa(resp.StatusCode()))
+		goto cleanup
+	}
+
+cleanup:
+	*bufPtr = (*bufPtr)[:0]
+	paymentBytePool.Put(bufPtr)
+	fasthttp.ReleaseRequest(req)
+	fasthttp.ReleaseResponse(resp)
+	return err
+}
+
+func savePayment(body *paymentDTO, handler string) error {
+	connectionPool, err := database.GetConnectionPool()
+	if err != nil {
+		return err
+	}
+	_, err = connectionPool.Exec(
+		context.Background(),
+		"INSERT INTO public.payments (correlation_id, amount, handler, created_at) VALUES ($1, $2, $3, $4)",
+		body.CorrelationID,
+		body.Amount,
+		handler,
+		body.RequestedAt,
+	)
+	return nil
+}
+
+func paymentHandler(body *paymentDTO) {
+	//@TODO AINDA AJUSTANDO ESSE MANO
+	err := tryPay(body, pDefault)
+	if err != nil {
+		paymentHandler(body)
+		return
+	}
+	savePayment(body, "default")
+	*body = paymentDTO{}
+	paymentDTOPool.Put(body)
 }

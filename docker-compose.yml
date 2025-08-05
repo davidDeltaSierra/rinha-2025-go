@@ -1,22 +1,40 @@
 services:
-  app-1:
+  lb:
     networks:
       - backend
     deploy:
       resources:
         limits:
-          cpus: "0.8"
-          memory: 100M
-    image: daviddeltasierra/rinha-2025-go-2:1.1
+          cpus: "0.2"
+          memory: 60M
+    image: daviddeltasierra/rinha-2025-go-2:1.2
     volumes:
-      - /tmp/worker-sock:/tmp/worker-sock
+      - /tmp:/tmp
     environment:
       - GATEWAY=true
     depends_on:
-      - postgres
+      - app-1
       - app-2
     ports:
       - "9999:8080"
+
+  app-1:
+    networks:
+      - backend
+      - payment-processor
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 70M
+    image: daviddeltasierra/rinha-2025-go-2:1.2
+    volumes:
+      - /tmp:/tmp
+    environment:
+      - GATEWAY=false
+      - SOCK=/tmp/app1.sock
+    depends_on:
+      - postgres
 
   app-2:
     networks:
@@ -25,13 +43,14 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.4"
-          memory: 100M
-    image: daviddeltasierra/rinha-2025-go-2:1.1
+          cpus: "0.5"
+          memory: 70M
+    image: daviddeltasierra/rinha-2025-go-2:1.2
     volumes:
-      - /tmp/worker-sock:/tmp/worker-sock
+      - /tmp:/tmp
     environment:
       - GATEWAY=false
+      - SOCK=/tmp/app2.sock
     depends_on:
       - postgres
 
