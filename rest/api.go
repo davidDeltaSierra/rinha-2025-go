@@ -52,7 +52,7 @@ var paymentBytePool = sync.Pool{
 }
 
 func SetupAPI() {
-	for i := 0; i < 1; i++ {
+	for i := 0; i < 2; i++ {
 		go func() {
 			for payment := range paymentDTOChannel {
 				paymentHandler(payment)
@@ -189,6 +189,7 @@ func paymentHandler(body *paymentDTO) {
 	//@TODO AINDA AJUSTANDO ESSE MANO
 	err := tryPay(body, pDefault)
 	if err != nil {
+		time.Sleep(10 * time.Millisecond)
 		paymentHandler(body)
 		return
 	}

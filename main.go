@@ -6,12 +6,10 @@ import (
 	"net"
 	"os"
 	"rinha/rest"
-	"runtime/debug"
 	"time"
 )
 
 func main() {
-	debug.SetGCPercent(3000)
 	isGateway := os.Getenv("GATEWAY")
 	if isGateway == "true" {
 		fmt.Println("init gateway")
