@@ -7,11 +7,13 @@ import (
 	"os"
 	"rinha/rest"
 	"runtime"
+	"runtime/debug"
 	"time"
 )
 
 func main() {
 	runtime.GOMAXPROCS(1)
+	debug.SetGCPercent(-1)
 	isGateway := os.Getenv("GATEWAY")
 	if isGateway == "true" {
 		fmt.Println("init gateway")
