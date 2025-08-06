@@ -6,10 +6,12 @@ import (
 	"net"
 	"os"
 	"rinha/rest"
+	"runtime"
 	"time"
 )
 
 func main() {
+	runtime.GOMAXPROCS(1)
 	isGateway := os.Getenv("GATEWAY")
 	if isGateway == "true" {
 		fmt.Println("init gateway")
