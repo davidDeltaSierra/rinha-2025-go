@@ -6,9 +6,9 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.6"
+          cpus: "0.7"
           memory: 60M
-    image: daviddeltasierra/rinha-2025-go-2:1.18
+    image: daviddeltasierra/rinha-2025-go-2:1.19
     volumes:
       - /tmp:/tmp
     environment:
@@ -28,7 +28,7 @@ services:
         limits:
           cpus: "0.3"
           memory: 70M
-    image: daviddeltasierra/rinha-2025-go-2:1.18
+    image: daviddeltasierra/rinha-2025-go-2:1.19
     volumes:
       - /tmp/app1:/tmp/app1
     environment:
@@ -47,7 +47,7 @@ services:
         limits:
           cpus: "0.3"
           memory: 70M
-    image: daviddeltasierra/rinha-2025-go-2:1.18
+    image: daviddeltasierra/rinha-2025-go-2:1.19
     volumes:
       - /tmp/app2:/tmp/app2
     environment:
@@ -63,7 +63,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.3"
+          cpus: "0.2"
           memory: 150M
     image: postgres:alpine
     user: postgres
