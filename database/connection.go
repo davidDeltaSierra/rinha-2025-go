@@ -20,7 +20,7 @@ func GetConnectionPool() (*pgxpool.Pool, error) {
 	}
 	once.Do(func() {
 		var config *pgxpool.Config
-		config, ConnectionPoolError = pgxpool.ParseConfig("postgres://postgres:root@postgres:5432/rinha?pool_min_conns=16&pool_max_conns=16")
+		config, ConnectionPoolError = pgxpool.ParseConfig("postgres://postgres:root@/rinha?host=/tmp&pool_min_conns=5&pool_max_conns=5")
 		if ConnectionPoolError != nil {
 			return
 		}

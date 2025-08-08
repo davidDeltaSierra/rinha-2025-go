@@ -8,10 +8,12 @@ import (
 	"rinha/rest"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 )
 
 func main() {
-	runtime.GOMAXPROCS(1)
+	GOMAXPROCS, _ := strconv.Atoi(os.Getenv("GOMAXPROCS"))
+	runtime.GOMAXPROCS(GOMAXPROCS)
 	debug.SetGCPercent(-1)
 	fmt.Println("init api")
 	sock := os.Getenv("SOCK")
