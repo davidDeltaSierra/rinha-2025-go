@@ -8,22 +8,11 @@ import (
 	"rinha/rest"
 	"runtime"
 	"runtime/debug"
-	"time"
 )
 
 func main() {
 	runtime.GOMAXPROCS(1)
 	debug.SetGCPercent(-1)
-	isGateway := os.Getenv("GATEWAY")
-	if isGateway == "true" {
-		fmt.Println("init gateway")
-		time.Sleep(2 * time.Second)
-		rest.InitializeClients()
-		if err := fasthttp.ListenAndServe(":8080", rest.GatewayHandler); err != nil {
-			panic(err)
-		}
-		return
-	}
 	fmt.Println("init api")
 	sock := os.Getenv("SOCK")
 	os.Remove(sock)
