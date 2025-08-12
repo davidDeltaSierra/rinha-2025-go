@@ -1,19 +1,21 @@
 package rest
 
 import (
+	"bytes"
 	"context"
 	"errors"
-	"github.com/goccy/go-json"
-	"github.com/jackc/pgx/v5"
-	"github.com/valyala/fasthttp"
+	"fmt"
+	"os"
 	"rinha/database"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
-)
 
-const pDefault = "http://payment-processor-default:8080"
-const pFallback = "http://payment-processor-fallback:8080"
+	"github.com/goccy/go-json"
+	"github.com/jackc/pgx/v5"
+	"github.com/valyala/fasthttp"
+)
 
 type paymentDTO struct {
 	CorrelationID string    `json:"correlationId"`
@@ -31,61 +33,62 @@ type PaymentSummary struct {
 	Fallback Summary `json:"fallback"`
 }
 
-var paymentProcessorClient = fasthttp.Client{
-	ReadTimeout:         6 * time.Second,
-	MaxIdleConnDuration: 60 * time.Second,
-	MaxConnsPerHost:     2,
-}
-var paymentDTOChannel = make(chan *paymentDTO, 16000)
-var paymentBodyChannel = make(chan []byte, 16000)
+var workers, _ = strconv.Atoi(os.Getenv("WORKERS"))
 
 var paymentDTOPool = sync.Pool{
 	New: func() any {
 		return new(paymentDTO)
 	},
 }
-var paymentBytePool = sync.Pool{
+var paymentProcessorBufferPool = sync.Pool{
 	New: func() any {
-		b := make([]byte, 256)
-		return &b
+		return new(bytes.Buffer)
 	},
 }
+var (
+	currentIndex           uint32
+	paymentsRingBuffQueues []*RingBuffer[*paymentDTO]
+	roundRobin             = func() *RingBuffer[*paymentDTO] {
+		index := atomic.AddUint32(&currentIndex, 1)
+		return paymentsRingBuffQueues[index%uint32(len(paymentsRingBuffQueues))]
+	}
+)
 
 func SetupAPI() {
-	for i := 0; i < 2; i++ {
-		go func() {
-			for payment := range paymentDTOChannel {
-				paymentHandler(payment)
-			}
-		}()
+	for i := 0; i < workers; i++ {
+		paymentsRingBuffQueues = append(paymentsRingBuffQueues, NewRingBuffer[*paymentDTO](16384))
 	}
-	for i := 0; i < 2; i++ {
+	for _, paymentsRingBuff := range paymentsRingBuffQueues {
 		go func() {
-			for bytes := range paymentBodyChannel {
-				payment := paymentDTOPool.Get().(*paymentDTO)
-				json.Unmarshal(bytes, payment)
-				payment.RequestedAt = time.Now().UTC()
-				paymentDTOChannel <- payment
+			for {
+				payment, pop := paymentsRingBuff.Pop()
+				if pop {
+					payment.RequestedAt = time.Now().UTC()
+					paymentHandler(payment, nil, nil, nil)
+					continue
+				}
+				time.Sleep(time.Second)
 			}
 		}()
 	}
 }
 
 func PaymentsController(ctx *fasthttp.RequestCtx) {
-	paymentBodyChannel <- ctx.Request.Body()
 	ctx.SetStatusCode(fasthttp.StatusAccepted)
+	payment := paymentDTOPool.Get().(*paymentDTO)
+	_ = json.Unmarshal(ctx.PostBody(), payment)
+	roundRobin().Push(payment)
 }
 
 func PaymentSummaryController(ctx *fasthttp.RequestCtx) {
 	from := string(ctx.QueryArgs().Peek("from"))
 	to := string(ctx.QueryArgs().Peek("to"))
-
-	summary, err := getPaymentsSummary(&from, &to)
+	time.Sleep(time.Second)
+	summary, err := getPaymentsSummary(from, to)
 	if err != nil {
 		ctx.Error("Internal Server Error", fasthttp.StatusInternalServerError)
 		return
 	}
-
 	ctx.SetContentType("application/json")
 	if err := json.NewEncoder(ctx).Encode(summary); err != nil {
 		ctx.Error("Failed to encode response", fasthttp.StatusInternalServerError)
@@ -96,7 +99,7 @@ func HealthcheckController(ctx *fasthttp.RequestCtx) {
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 
-func getPaymentsSummary(from *string, to *string) (*PaymentSummary, error) {
+func getPaymentsSummary(from string, to string) (*PaymentSummary, error) {
 	db, err := database.GetConnectionPool()
 	if err != nil {
 		return nil, err
@@ -105,13 +108,13 @@ func getPaymentsSummary(from *string, to *string) (*PaymentSummary, error) {
 		SELECT handler, COUNT(*) as total_requests, SUM(amount) as total_amount
 		FROM public.payments
 	`
-	if (from != nil && *from != "") && (to != nil && *to != "") {
+	if (from != "") && (to != "") {
 		baseQuery += " WHERE created_at between $1 and $2 "
 	}
 	baseQuery += " GROUP BY handler"
 	ctx := context.Background()
 	var rows pgx.Rows
-	if (from != nil && *from != "") && (to != nil && *to != "") {
+	if (from != "") && (to != "") {
 		rows, err = db.Query(ctx, baseQuery, from, to)
 	} else {
 		rows, err = db.Query(ctx, baseQuery)
@@ -138,35 +141,25 @@ func getPaymentsSummary(from *string, to *string) (*PaymentSummary, error) {
 	return &summary, nil
 }
 
-func tryPay(body *paymentDTO, processor string) (err error) {
-	bufPtr := paymentBytePool.Get().(*[]byte)
-	data, err := json.Marshal(body)
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	if err != nil {
-		goto cleanup
+func tryPay(body *paymentDTO, req *fasthttp.Request, resp *fasthttp.Response, buff *bytes.Buffer) (error, *fasthttp.Request, *fasthttp.Response, *bytes.Buffer) {
+	if req == nil {
+		buff = paymentProcessorBufferPool.Get().(*bytes.Buffer)
+		_ = json.NewEncoder(buff).Encode(body)
+		req = fasthttp.AcquireRequest()
+		resp = fasthttp.AcquireResponse()
+		req.SetRequestURI(pDefault + "/payments")
+		req.Header.SetMethod(fasthttp.MethodPost)
+		req.Header.SetContentType("application/json")
+		req.SetBody(buff.Bytes())
 	}
-	*bufPtr = append(*bufPtr, data...)
-	req.SetRequestURI(processor + "/payments")
-	req.Header.SetMethod(fasthttp.MethodPost)
-	req.Header.SetContentType("application/json")
-	req.SetBody(*bufPtr)
-
-	err = paymentProcessorClient.Do(req, resp)
+	err := paymentProcessorClient.Do(req, resp)
 	if err != nil {
-		goto cleanup
+		return err, req, resp, buff
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		err = errors.New("Status code: " + strconv.Itoa(resp.StatusCode()))
-		goto cleanup
+		return errors.New("Status code: " + strconv.Itoa(resp.StatusCode())), req, resp, buff
 	}
-
-cleanup:
-	*bufPtr = (*bufPtr)[:0]
-	paymentBytePool.Put(bufPtr)
-	fasthttp.ReleaseRequest(req)
-	fasthttp.ReleaseResponse(resp)
-	return err
+	return nil, req, resp, buff
 }
 
 func savePayment(body *paymentDTO, handler string) error {
@@ -185,15 +178,23 @@ func savePayment(body *paymentDTO, handler string) error {
 	return nil
 }
 
-func paymentHandler(body *paymentDTO) {
-	//@TODO AINDA AJUSTANDO ESSE MANO
-	err := tryPay(body, pDefault)
-	if err != nil {
-		time.Sleep(10 * time.Millisecond)
-		paymentHandler(body)
-		return
+func paymentHandler(body *paymentDTO, req *fasthttp.Request, resp *fasthttp.Response, buff *bytes.Buffer) {
+	var err error
+	for {
+		err, req, resp, buff = tryPay(body, req, resp, buff)
+		if err != nil {
+			continue
+		}
+		err = savePayment(body, "default")
+		if err != nil {
+			fmt.Println("Erro ao salvar pagamento:", err)
+		}
+		buff.Reset()
+		paymentProcessorBufferPool.Put(buff)
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+		*body = paymentDTO{}
+		paymentDTOPool.Put(body)
+		break
 	}
-	savePayment(body, "default")
-	*body = paymentDTO{}
-	paymentDTOPool.Put(body)
 }

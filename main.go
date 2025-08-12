@@ -2,13 +2,15 @@ package main
 
 import (
 	"fmt"
-	"github.com/valyala/fasthttp"
 	"net"
 	"os"
 	"rinha/rest"
 	"runtime"
 	"runtime/debug"
 	"strconv"
+	"time"
+
+	"github.com/valyala/fasthttp"
 )
 
 func main() {
@@ -29,7 +31,12 @@ func main() {
 		panic(err)
 	}
 	rest.SetupAPI()
-	if err := fasthttp.Serve(l, router); err != nil {
+	server := fasthttp.Server{
+		IdleTimeout:  60 * time.Second,
+		TCPKeepalive: true,
+		Handler:      router,
+	}
+	if err := server.Serve(l); err != nil {
 		panic(err)
 	}
 }
