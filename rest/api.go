@@ -9,7 +9,6 @@ import (
 	"rinha/database"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/goccy/go-json"
@@ -45,29 +44,14 @@ var paymentProcessorBufferPool = sync.Pool{
 		return new(bytes.Buffer)
 	},
 }
-var (
-	currentIndex           uint32
-	paymentsRingBuffQueues []*RingBuffer[*paymentDTO]
-	roundRobin             = func() *RingBuffer[*paymentDTO] {
-		index := atomic.AddUint32(&currentIndex, 1)
-		return paymentsRingBuffQueues[index%uint32(len(paymentsRingBuffQueues))]
-	}
-)
+var paymentsChannel = make(chan *paymentDTO, 32768)
 
 func SetupAPI() {
 	for i := 0; i < workers; i++ {
-		paymentsRingBuffQueues = append(paymentsRingBuffQueues, NewRingBuffer[*paymentDTO](16384))
-	}
-	for _, paymentsRingBuff := range paymentsRingBuffQueues {
 		go func() {
-			for {
-				payment, pop := paymentsRingBuff.Pop()
-				if pop {
-					payment.RequestedAt = time.Now().UTC()
-					paymentHandler(payment, nil, nil, nil)
-					continue
-				}
-				time.Sleep(time.Second)
+			for payment := range paymentsChannel {
+				payment.RequestedAt = time.Now().UTC()
+				paymentHandler(payment, nil, nil, nil)
 			}
 		}()
 	}
@@ -77,7 +61,7 @@ func PaymentsController(ctx *fasthttp.RequestCtx) {
 	ctx.SetStatusCode(fasthttp.StatusAccepted)
 	payment := paymentDTOPool.Get().(*paymentDTO)
 	_ = json.Unmarshal(ctx.PostBody(), payment)
-	roundRobin().Push(payment)
+	paymentsChannel <- payment
 }
 
 func PaymentSummaryController(ctx *fasthttp.RequestCtx) {

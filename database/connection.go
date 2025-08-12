@@ -3,8 +3,9 @@ package database
 import (
 	"context"
 	"errors"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"sync"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var (
@@ -20,7 +21,7 @@ func GetConnectionPool() (*pgxpool.Pool, error) {
 	}
 	once.Do(func() {
 		var config *pgxpool.Config
-		config, ConnectionPoolError = pgxpool.ParseConfig("postgres://postgres:root@/rinha?host=/tmp&pool_min_conns=5&pool_max_conns=5")
+		config, ConnectionPoolError = pgxpool.ParseConfig("postgres://postgres:root@/rinha?host=/tmp&pool_min_conns=20&pool_max_conns=20")
 		if ConnectionPoolError != nil {
 			return
 		}
