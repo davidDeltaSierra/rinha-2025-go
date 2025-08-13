@@ -67,7 +67,6 @@ func PaymentsController(ctx *fasthttp.RequestCtx) {
 func PaymentSummaryController(ctx *fasthttp.RequestCtx) {
 	from := string(ctx.QueryArgs().Peek("from"))
 	to := string(ctx.QueryArgs().Peek("to"))
-	time.Sleep(time.Second)
 	summary, err := getPaymentsSummary(from, to)
 	if err != nil {
 		ctx.Error("Internal Server Error", fasthttp.StatusInternalServerError)
