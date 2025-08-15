@@ -1,55 +1,22 @@
 package main
 
 import (
-	"fmt"
-	"net"
+	"log"
 	"os"
-	"rinha/rest"
+	"rinha/server"
 	"runtime"
 	"runtime/debug"
 	"strconv"
-	"time"
 
-	"github.com/valyala/fasthttp"
+	"github.com/panjf2000/gnet/v2"
 )
 
 func main() {
 	GOMAXPROCS, _ := strconv.Atoi(os.Getenv("GOMAXPROCS"))
 	runtime.GOMAXPROCS(GOMAXPROCS)
 	debug.SetGCPercent(-1)
-	fmt.Println("init api")
-	sock := os.Getenv("SOCK")
+	var sock = os.Getenv("SOCK")
 	os.Remove(sock)
-	l, err := net.Listen("unix", sock)
-	if err != nil {
-		fmt.Println("Erro ao iniciar socket:", err)
-		panic(err)
-	}
-	err = os.Chmod(sock, 0666)
-	if err != nil {
-		fmt.Println("Error ao liberar permissões:", err)
-		panic(err)
-	}
-	rest.SetupAPI()
-	server := fasthttp.Server{
-		IdleTimeout:  60 * time.Second,
-		TCPKeepalive: true,
-		Handler:      router,
-	}
-	if err := server.Serve(l); err != nil {
-		panic(err)
-	}
-}
-
-func router(ctx *fasthttp.RequestCtx) {
-	switch string(ctx.Path()) {
-	case "/payments":
-		rest.PaymentsController(ctx)
-	case "/payments-summary":
-		rest.PaymentSummaryController(ctx)
-	case "/healthcheck":
-		rest.HealthcheckController(ctx)
-	default:
-		ctx.Error("Not Found", fasthttp.StatusNotFound)
-	}
+	echo := server.NewHttpEventHandler(sock)
+	log.Fatal(gnet.Run(echo, "unix://"+sock, gnet.WithMulticore(true)))
 }
