@@ -52,15 +52,24 @@ var paymentProcessorClient = fasthttp.Client{
 	MaxIdleConnDuration: 60 * time.Second,
 }
 
-var defaultHealthMonitor = NewHealthMonitor()
+var defaultHealthBroadcast = NewHealthBroadcast()
 
 func SetupAPI() {
 	for i := 0; i < workers; i++ {
 		go func(workerID int) {
 			sentinel := workerID == 0
+			updates := defaultHealthBroadcast.Subscribe()
+			singleMonitorCopy := &Monitor{true, false}
+
+			go func() {
+				for m := range updates {
+					singleMonitorCopy = m
+				}
+			}()
+
 			for payment := range paymentsChannel {
 				payment.RequestedAt = time.Now().UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano)
-				paymentHandler(sentinel, payment, nil, nil, nil)
+				paymentHandler(singleMonitorCopy, sentinel, payment, nil, nil, nil)
 			}
 		}(i)
 	}
@@ -171,24 +180,25 @@ func savePayment(body *paymentDTO, handler string) error {
 	return nil
 }
 
-func paymentHandler(sentinel bool, body *paymentDTO, req *fasthttp.Request, resp *fasthttp.Response, buff *bytes.Buffer) {
+func paymentHandler(monitor *Monitor, sentinel bool, body *paymentDTO, req *fasthttp.Request, resp *fasthttp.Response, buff *bytes.Buffer) {
 	var err error
 	var handle string
 	for {
-		for !sentinel && !defaultHealthMonitor.IsCritical() && !defaultHealthMonitor.GetHealth() {
-			defaultHealthMonitor.AwaitHealth()
+		for !sentinel && !monitor.Critical && !monitor.Health {
+			time.Sleep(time.Millisecond)
 		}
 		err, req, resp, buff = tryPay(pDefault, body, req, resp, buff)
 		if err != nil {
-			defaultHealthMonitor.SetHealth(false)
-			if !sentinel && !defaultHealthMonitor.IsCritical() {
-				continue
-			}
-			if sentinel && !defaultHealthMonitor.IsCritical() {
+			defaultHealthBroadcast.SetHealth(false)
+			if !monitor.Critical {
+				if sentinel {
+					time.Sleep(10 * time.Millisecond)
+				}
 				continue
 			}
 			err, req, resp, buff = tryPay(pFallback, body, req, resp, buff)
 			if err != nil {
+				time.Sleep(10 * time.Millisecond)
 				continue
 			} else {
 				handle = "fallback"
@@ -197,7 +207,7 @@ func paymentHandler(sentinel bool, body *paymentDTO, req *fasthttp.Request, resp
 			handle = "default"
 		}
 		if sentinel && handle == "default" {
-			defaultHealthMonitor.SetHealth(true)
+			defaultHealthBroadcast.SetHealth(true)
 		}
 		err = savePayment(body, handle)
 		if err != nil {
