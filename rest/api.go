@@ -16,10 +16,13 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+const pDefault = "http://payment-processor-default:8080"
+const pFallback = "http://payment-processor-fallback:8080"
+
 type paymentDTO struct {
-	CorrelationID string    `json:"correlationId"`
-	Amount        float64   `json:"amount"`
-	RequestedAt   time.Time `json:"requestedAt"`
+	CorrelationID string  `json:"correlationId"`
+	Amount        float64 `json:"amount"`
+	RequestedAt   string  `json:"requestedAt"`
 }
 
 type Summary struct {
@@ -44,16 +47,22 @@ var paymentProcessorBufferPool = sync.Pool{
 		return new(bytes.Buffer)
 	},
 }
-var paymentsChannel = make(chan *paymentDTO, 32768)
+var paymentsChannel = make(chan *paymentDTO, 64000)
+var paymentProcessorClient = fasthttp.Client{
+	MaxIdleConnDuration: 60 * time.Second,
+}
+
+var defaultHealthMonitor = NewHealthMonitor()
 
 func SetupAPI() {
 	for i := 0; i < workers; i++ {
-		go func() {
+		go func(workerID int) {
+			sentinel := workerID == 0
 			for payment := range paymentsChannel {
-				payment.RequestedAt = time.Now().UTC()
-				paymentHandler(payment, nil, nil, nil)
+				payment.RequestedAt = time.Now().UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano)
+				paymentHandler(sentinel, payment, nil, nil, nil)
 			}
-		}()
+		}(i)
 	}
 }
 
@@ -67,6 +76,7 @@ func PaymentsController(ctx *fasthttp.RequestCtx) {
 func PaymentSummaryController(ctx *fasthttp.RequestCtx) {
 	from := string(ctx.QueryArgs().Peek("from"))
 	to := string(ctx.QueryArgs().Peek("to"))
+	time.Sleep(500 * time.Millisecond)
 	summary, err := getPaymentsSummary(from, to)
 	if err != nil {
 		ctx.Error("Internal Server Error", fasthttp.StatusInternalServerError)
@@ -124,13 +134,13 @@ func getPaymentsSummary(from string, to string) (*PaymentSummary, error) {
 	return &summary, nil
 }
 
-func tryPay(body *paymentDTO, req *fasthttp.Request, resp *fasthttp.Response, buff *bytes.Buffer) (error, *fasthttp.Request, *fasthttp.Response, *bytes.Buffer) {
+func tryPay(gateway string, body *paymentDTO, req *fasthttp.Request, resp *fasthttp.Response, buff *bytes.Buffer) (error, *fasthttp.Request, *fasthttp.Response, *bytes.Buffer) {
 	if req == nil {
 		buff = paymentProcessorBufferPool.Get().(*bytes.Buffer)
 		_ = json.NewEncoder(buff).Encode(body)
 		req = fasthttp.AcquireRequest()
 		resp = fasthttp.AcquireResponse()
-		req.SetRequestURI(pDefault + "/payments")
+		req.SetRequestURI(gateway + "/payments")
 		req.Header.SetMethod(fasthttp.MethodPost)
 		req.Header.SetContentType("application/json")
 		req.SetBody(buff.Bytes())
@@ -161,14 +171,35 @@ func savePayment(body *paymentDTO, handler string) error {
 	return nil
 }
 
-func paymentHandler(body *paymentDTO, req *fasthttp.Request, resp *fasthttp.Response, buff *bytes.Buffer) {
+func paymentHandler(sentinel bool, body *paymentDTO, req *fasthttp.Request, resp *fasthttp.Response, buff *bytes.Buffer) {
 	var err error
+	var handle string
 	for {
-		err, req, resp, buff = tryPay(body, req, resp, buff)
-		if err != nil {
-			continue
+		for !sentinel && !defaultHealthMonitor.IsCritical() && !defaultHealthMonitor.GetHealth() {
+			defaultHealthMonitor.AwaitHealth()
 		}
-		err = savePayment(body, "default")
+		err, req, resp, buff = tryPay(pDefault, body, req, resp, buff)
+		if err != nil {
+			defaultHealthMonitor.SetHealth(false)
+			if !sentinel && !defaultHealthMonitor.IsCritical() {
+				continue
+			}
+			if sentinel && !defaultHealthMonitor.IsCritical() {
+				continue
+			}
+			err, req, resp, buff = tryPay(pFallback, body, req, resp, buff)
+			if err != nil {
+				continue
+			} else {
+				handle = "fallback"
+			}
+		} else {
+			handle = "default"
+		}
+		if sentinel && handle == "default" {
+			defaultHealthMonitor.SetHealth(true)
+		}
+		err = savePayment(body, handle)
 		if err != nil {
 			fmt.Println("Erro ao salvar pagamento:", err)
 		}
