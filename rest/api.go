@@ -63,7 +63,7 @@ func SetupAPI() {
 
 			go func() {
 				for m := range updates {
-					singleMonitorCopy = m
+					*singleMonitorCopy = m
 				}
 			}()
 

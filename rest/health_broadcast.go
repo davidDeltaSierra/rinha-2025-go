@@ -12,20 +12,20 @@ type Monitor struct {
 
 type HealthBroadcast struct {
 	mu       sync.Mutex
-	monitor  *Monitor
-	subs     []chan *Monitor
+	monitor  Monitor
+	subs     []chan Monitor
 	lastDown *time.Time
 	downTime int64
 }
 
 func NewHealthBroadcast() *HealthBroadcast {
 	return &HealthBroadcast{
-		monitor: &Monitor{true, false},
+		monitor: Monitor{true, false},
 	}
 }
 
-func (hm *HealthBroadcast) Subscribe() <-chan *Monitor {
-	ch := make(chan *Monitor, 1)
+func (hm *HealthBroadcast) Subscribe() <-chan Monitor {
+	ch := make(chan Monitor, 1)
 	hm.mu.Lock()
 	hm.subs = append(hm.subs, ch)
 	ch <- hm.monitor
